@@ -1,0 +1,39 @@
+name: swifty_protein
+description: Protein ligand visualizer - 42 school project
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  local_auth: ^2.3.0
+  flutter_secure_storage: ^9.2.2
+  http: ^1.2.1
+  webview_flutter: ^4.10.0
+  share_plus: ^10.0.3
+  crypto: ^3.0.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  flutter_launcher_icons: ^0.14.1
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/icon/icon.png"
+  adaptive_icon_background: "#0D0D1A"
+  adaptive_icon_foreground: "assets/icon/icon_foreground.png"
+  remove_alpha_ios: true
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/ligands.txt
+    - assets/viewer.html
+    - assets/icon/icon.png

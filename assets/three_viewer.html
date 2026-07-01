@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0A0E1A; overflow: hidden; width: 100vw; height: 100vh; }
+  canvas { display: block; }
+  #tooltip {
+    position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
+    background: rgba(17,24,39,0.95); border: 1px solid rgba(0,212,255,0.4);
+    border-radius: 12px; padding: 12px 20px; text-align: center;
+    font-family: -apple-system, sans-serif; pointer-events: none;
+    opacity: 0; transition: opacity 0.2s;
+  }
+  #tooltip.visible { opacity: 1; }
+  #tooltip .symbol { color: #00D4FF; font-size: 28px; font-weight: 700; }
+  #tooltip .name   { color: #9CA3AF; font-size: 12px; margin-top: 2px; }
+  #tooltip .coords { color: #6B7280; font-size: 11px; margin-top: 4px; }
+</style>
+</head>
+<body>
+<div id="tooltip">
+  <div class="symbol" id="tt-symbol"></div>
+  <div class="name"   id="tt-name"></div>
+  <div class="coords" id="tt-coords"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ── Scene setup ──────────────────────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0A0E1A);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 500);
+camera.position.set(0, 0, 20);
+
+// Lighting
+const ambient = new THREE.AmbientLight(0xffffff, 0.4);
+scene.add(ambient);
+const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+dirLight.position.set(10, 15, 10);
+scene.add(dirLight);
+const dirLight2 = new THREE.DirectionalLight(0x88ccff, 0.4);
+dirLight2.position.set(-10, -5, -10);
+scene.add(dirLight2);
+const pointLight = new THREE.PointLight(0x00D4FF, 0.3, 50);
+pointLight.position.set(0, 10, 5);
+scene.add(pointLight);
+
+// Molecule group
+let molGroup = new THREE.Group();
+scene.add(molGroup);
+
+// Atom meshes for raycasting
+let atomMeshes = [];
+let atomData = [];
+
+// ── Orbit controls (manual implementation) ───────────────────────────────────
+let isDragging = false, isPinching = false;
+let prevX = 0, prevY = 0;
+let prevDist = 0;
+let rotX = 0, rotY = 0;
+let zoom = 1;
+let panX = 0, panY = 0;
+
+const canvas = renderer.domElement;
+
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  if (e.touches.length === 1) {
+    isDragging = true;
+    prevX = e.touches[0].clientX;
+    prevY = e.touches[0].clientY;
+    hideTooltip();
+  } else if (e.touches.length === 2) {
+    isPinching = true;
+    isDragging = false;
+    prevDist = Math.hypot(
+      e.touches[0].clientX - e.touches[1].clientX,
+      e.touches[0].clientY - e.touches[1].clientY
+    );
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  if (isDragging && e.touches.length === 1) {
+    const dx = e.touches[0].clientX - prevX;
+    const dy = e.touches[0].clientY - prevY;
+    rotY += dx * 0.4;
+    rotX += dy * 0.4;
+    prevX = e.touches[0].clientX;
+    prevY = e.touches[0].clientY;
+  } else if (isPinching && e.touches.length === 2) {
+    const dist = Math.hypot(
+      e.touches[0].clientX - e.touches[1].clientX,
+      e.touches[0].clientY - e.touches[1].clientY
+    );
+    const delta = (dist - prevDist) * 0.02;
+    zoom = Math.max(0.2, Math.min(5, zoom + delta));
+    prevDist = dist;
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchend', e => {
+  if (e.touches.length === 0) { isDragging = false; isPinching = false; }
+  if (e.changedTouches.length === 1 && e.timeStamp - (canvas._tapStart || 0) < 200) {
+    handleTap(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
+  }
+  canvas._tapStart = e.timeStamp;
+});
+
+// Mouse support
+canvas.addEventListener('mousedown', e => {
+  isDragging = true; prevX = e.clientX; prevY = e.clientY;
+});
+canvas.addEventListener('mousemove', e => {
+  if (!isDragging) return;
+  rotY += (e.clientX - prevX) * 0.4;
+  rotX += (e.clientY - prevY) * 0.4;
+  prevX = e.clientX; prevY = e.clientY;
+});
+canvas.addEventListener('mouseup', e => { isDragging = false; });
+canvas.addEventListener('click', e => handleTap(e.clientX, e.clientY));
+canvas.addEventListener('wheel', e => {
+  zoom = Math.max(0.2, Math.min(5, zoom - e.deltaY * 0.001));
+});
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ── Tooltip ───────────────────────────────────────────────────────────────────
+const tooltip = document.getElementById('tooltip');
+function showTooltip(atom) {
+  document.getElementById('tt-symbol').textContent = atom.element;
+  document.getElementById('tt-name').textContent = atom.name;
+  document.getElementById('tt-coords').textContent =
+    `x: ${atom.x.toFixed(2)}  y: ${atom.y.toFixed(2)}  z: ${atom.z.toFixed(2)}`;
+  tooltip.classList.add('visible');
+}
+function hideTooltip() { tooltip.classList.remove('visible'); }
+
+// ── Raycasting for atom taps ──────────────────────────────────────────────────
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+
+function handleTap(clientX, clientY) {
+  mouse.x =  (clientX / window.innerWidth)  * 2 - 1;
+  mouse.y = -(clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  const hits = raycaster.intersectObjects(atomMeshes);
+  if (hits.length > 0) {
+    const idx = atomMeshes.indexOf(hits[0].object);
+    if (idx >= 0) showTooltip(atomData[idx]);
+  } else {
+    hideTooltip();
+  }
+}
+
+// ── Molecule rendering ────────────────────────────────────────────────────────
+const ATOM_RADIUS = 0.35;
+const BOND_RADIUS = 0.10;
+const SPHERE_SEGS = 16;
+const CYL_SEGS = 8;
+
+const matCache = {};
+function getMaterial(color) {
+  if (!matCache[color]) {
+    matCache[color] = new THREE.MeshPhongMaterial({
+      color: new THREE.Color(color),
+      shininess: 80,
+      specular: new THREE.Color(0x444444),
+    });
+  }
+  return matCache[color];
+}
+const bondMat = new THREE.MeshPhongMaterial({ color: 0x888888, shininess: 40 });
+
+function buildMolecule(data) {
+  // Clear previous
+  while (molGroup.children.length) molGroup.remove(molGroup.children[0]);
+  atomMeshes = [];
+  atomData = [];
+
+  const atoms = data.atoms;
+  const bonds = data.bonds;
+
+  // Build atom lookup
+  const atomMap = {};
+  atoms.forEach(a => { atomMap[a.id] = a; });
+
+  // Center molecule
+  let cx = 0, cy = 0, cz = 0;
+  atoms.forEach(a => { cx += a.x; cy += a.y; cz += a.z; });
+  cx /= atoms.length; cy /= atoms.length; cz /= atoms.length;
+
+  // Atoms
+  const sphereGeo = new THREE.SphereGeometry(ATOM_RADIUS, SPHERE_SEGS, SPHERE_SEGS);
+  atoms.forEach(a => {
+    const mat = getMaterial(a.color);
+    const mesh = new THREE.Mesh(sphereGeo, mat);
+    mesh.position.set(a.x - cx, a.y - cy, a.z - cz);
+    molGroup.add(mesh);
+    atomMeshes.push(mesh);
+    atomData.push(a);
+  });
+
+  // Bonds
+  bonds.forEach(b => {
+    const a1 = atomMap[b.atom1];
+    const a2 = atomMap[b.atom2];
+    if (!a1 || !a2) return;
+
+    const p1 = new THREE.Vector3(a1.x - cx, a1.y - cy, a1.z - cz);
+    const p2 = new THREE.Vector3(a2.x - cx, a2.y - cy, a2.z - cz);
+    const dir = new THREE.Vector3().subVectors(p2, p1);
+    const len = dir.length();
+    if (len < 0.01) return;
+
+    const cylGeo = new THREE.CylinderGeometry(BOND_RADIUS, BOND_RADIUS, len, CYL_SEGS);
+    const cyl = new THREE.Mesh(cylGeo, bondMat);
+    cyl.position.copy(p1).lerp(p2, 0.5);
+    cyl.quaternion.setFromUnitVectors(
+      new THREE.Vector3(0, 1, 0),
+      dir.normalize()
+    );
+    molGroup.add(cyl);
+  });
+
+  // Auto-fit camera
+  const box = new THREE.Box3().setFromObject(molGroup);
+  const size = box.getSize(new THREE.Vector3()).length();
+  zoom = 1;
+  camera.position.set(0, 0, size * 1.4);
+  camera.near = 0.1;
+  camera.far = size * 20;
+  camera.updateProjectionMatrix();
+}
+
+// ── Flutter bridge ────────────────────────────────────────────────────────────
+window.renderMolecule = function(jsonStr) {
+  try {
+    const data = JSON.parse(jsonStr);
+    buildMolecule(data);
+    hideTooltip();
+  } catch (e) {
+    console.error('renderMolecule error:', e);
+  }
+};
+
+// ── Render loop ───────────────────────────────────────────────────────────────
+const euler = new THREE.Euler();
+function animate() {
+  requestAnimationFrame(animate);
+  euler.set(THREE.MathUtils.degToRad(rotX), THREE.MathUtils.degToRad(rotY), 0, 'YXZ');
+  molGroup.setRotationFromEuler(euler);
+  molGroup.scale.setScalar(zoom);
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>
